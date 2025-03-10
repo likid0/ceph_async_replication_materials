@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <!-- No meta refresh since we'll use AJAX for file list -->
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>File Viewer App - RGW Async Replication Demo</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      body { background-color: #f8f9fa; }
+      .header {
+        background-color: #007bff;
+        color: white;
+        padding: 20px;
+        text-align: center;
+        margin-bottom: 20px;
+      }
+      .header img {
+        height: 120px;
+        margin-bottom: 10px;
+      }
+      .container { margin-top: 20px; }
+      .chart-container { width: 600px; height: 400px; margin: 20px auto; }
+      /* Replication status badges */
+      .badge-yes {
+        background-color: #28a745;
+        color: white;
+        padding: 5px 10px;
+        border-radius: 5px;
+      }
+      .badge-no {
+        background-color: #dc3545;
+        color: white;
+        padding: 5px 10px;
+        border-radius: 5px;
+      }
+      /* File listing box */
+      #file-list-box { margin-top: 20px; }
+    </style>
+    <script>
+      // Provided via Flask (Jinja)
+      const rgw_endpoint = "{{ rgw_endpoint }}";
+      const bucket_name = "{{ bucket_name }}";
+    </script>
+  </head>
+
+  <body>
+    <div class="header">
+      <img src="https://ceph.io/assets/bitmaps/Ceph_Logo_Standard_RGB_Black_120411_fa.png" alt="Ceph Logo">
+      <h1>RGW Async Replication Demo</h1>
+      <p>Serving from: {{ my_dc }}</p>
+    </div>
+    
+    <div class="container">
+      <!-- Flash messages -->
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+              {{ message }}
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+      
+      <!-- File Upload Card -->
+      <div class="card mb-4">
+        <div class="card-body">
+          <h5 class="card-title">Upload a File</h5>
+          <form method="post" enctype="multipart/form-data">
+            <div class="mb-3">
+              <label for="file" class="form-label">Select file</label>
+              <input class="form-control" type="file" id="file" name="file">
+            </div>
+            <button type="submit" class="btn btn-primary">Upload</button>
+          </form>
+        </div>
+      </div>
+      
+      <!-- Charts Section -->
+      <div class="row">
+        <div class="col-md-6">
+          <div class="chart-container">
+            <canvas id="uploadBarChart"></canvas>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="chart-container">
+            <canvas id="usageDoughnutChart"></canvas>
+          </div>
+        </div>
+      </div>
+      
+      <!-- File Listing Section (auto-refresh via AJAX) -->
+      <div id="file-list-box">
+        <div class="card mt-4">
+          <div class="card-body">
+            <h5 class="card-title">Uploaded Files</h5>
+            <table class="table table-striped">
+              <thead>
+                <tr>
+                  <th>Filename</th>
+                  <th>Last Modified</th>
+                  <th>Size (Bytes)</th>
+                  <th>Uploaded From</th>
+                  <th>Replicated</th>
+                  <th>View</th>
+                </tr>
+              </thead>
+              <tbody id="file-list-tbody">
+                {% if objects %}
+                  {% for obj in objects %}
+                    <tr>
+                      <td>{{ obj.Key }}</td>
+                      <td>{{ obj.LastModified }}</td>
+                      <td>{{ obj.Size }}</td>
+                      <td>{{ obj.upload_origin }}</td>
+                      <td>
+                        {% if obj.replication_status == "YES" %}
+                          <span class="badge-yes">YES</span>
+                        {% else %}
+                          <span class="badge-no">NO</span>
+                        {% endif %}
+                      </td>
+                      <td>
+                        <a href="/preview/{{ obj.Key }}" target="_blank" class="btn btn-sm btn-info">View</a>
+                      </td>
+                    </tr>
+                  {% endfor %}
+                {% else %}
+                  <tr>
+                    <td colspan="6" class="text-center">No files uploaded yet.</td>
+                  </tr>
+                {% endif %}
+              </tbody>
+            </table>
+            <p class="mt-3">
+              <strong>Bucket Usage:</strong> {{ bucket_usage | round(2) }} MB used out of a quota of {{ bucket_quota }} MB
+              ({{ usage_percentage | round(2) }}%).
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Charts Initialization -->
+    <script>
+      // Bar Chart: Upload counts by zone (Madrid and Paris)
+      const uploadCounts = {{ upload_counts | tojson }};
+      const labelsBar = Object.keys(uploadCounts);
+      const dataBar = Object.values(uploadCounts);
+      const ctxBar = document.getElementById('uploadBarChart').getContext('2d');
+      const uploadBarChart = new Chart(ctxBar, {
+        type: 'bar',
+        data: {
+          labels: labelsBar,
+          datasets: [{
+            label: 'Number of Uploads',
+            data: dataBar,
+            backgroundColor: labelsBar.map(label => {
+              if(label === "Madrid") return 'rgba(54, 162, 235, 0.6)';
+              if(label === "Paris") return 'rgba(255, 99, 132, 0.6)';
+              return 'rgba(201, 203, 207, 0.6)';
+            }),
+            borderColor: labelsBar.map(label => {
+              if(label === "Madrid") return 'rgba(54, 162, 235, 1)';
+              if(label === "Paris") return 'rgba(255, 99, 132, 1)';
+              return 'rgba(201, 203, 207, 1)';
+            }),
+            borderWidth: 1
+          }]
+        },
+        options: {
+          scales: { y: { beginAtZero: true } }
+        }
+      });
+      
+      // Doughnut Chart: Bucket usage vs quota
+      const bucketUsage = {{ bucket_usage | round(2) }};
+      const bucketQuota = {{ bucket_quota }};
+      const remaining = Math.max(bucketQuota - bucketUsage, 0);
+      const ctxDoughnut = document.getElementById('usageDoughnutChart').getContext('2d');
+      const usageDoughnutChart = new Chart(ctxDoughnut, {
+        type: 'doughnut',
+        data: {
+          labels: ['Used (MB)', 'Free (MB)'],
+          datasets: [{
+            data: [bucketUsage, remaining],
+            backgroundColor: ['rgba(255, 205, 86, 0.7)', 'rgba(201, 203, 207, 0.7)'],
+            borderColor: ['rgba(255, 205, 86, 1)', 'rgba(201, 203, 207, 1)'],
+            borderWidth: 1
+          }]
+        },
+        options: {
+          plugins: {
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  return context.label + ': ' + context.parsed + ' MB';
+                }
+              }
+            }
+          }
+        }
+      });
+      
+      // AJAX to refresh file list
+      async function refreshFileList() {
+        try {
+          const response = await fetch('/api/filelist');
+          const objects = await response.json();
+          const tbody = document.getElementById('file-list-tbody');
+          let html = '';
+          if (objects && objects.length > 0) {
+            objects.forEach(obj => {
+              html += `<tr>
+                <td>${obj.Key}</td>
+                <td>${obj.LastModified}</td>
+                <td>${obj.Size}</td>
+                <td>${obj.upload_origin || 'Unknown'}</td>
+                <td>`;
+              if (obj.replication_status === "YES") {
+                html += `<span class="badge-yes">YES</span>`;
+              } else {
+                html += `<span class="badge-no">NO</span>`;
+              }
+              html += `</td>
+                <td><a href="/preview/${obj.Key}" target="_blank" class="btn btn-sm btn-info">View</a></td>
+              </tr>`;
+            });
+          } else {
+            html = `<tr><td colspan="6" class="text-center">No files uploaded yet.</td></tr>`;
+          }
+          tbody.innerHTML = html;
+        } catch (error) {
+          console.error("Error refreshing file list:", error);
+        }
+      }
+      
+      setInterval(refreshFileList, 10000);
+      refreshFileList();
+    </script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  </body>
+</html>
+
